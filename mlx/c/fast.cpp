@@ -8,6 +8,66 @@
 #include "mlx/c/private/mlx.h"
 #include "mlx/fast.h"
 
+// lumen-rs Phase 1.6: mlx-c SDPA wrapper stage timing.
+// Splits `mlx_fast_scaled_dot_product_attention` into:
+//   - input_extract: 3× mlx_array_get_ + string ctor
+//   - sdpa_call:     the mlx::core::fast::scaled_dot_product_attention call
+//   - output_wrap:   mlx_array_set_ on the result handle
+//
+// Compared against the Rust-side `attn.sdpa` bucket (2.35 ms/call at 4K)
+// and the MLX C++ SDPA bucket (1.265 μs/call at 4K), this localizes
+// which side of the mlx-c boundary owns the FFI cost. Activated via
+// `LUMEN_MLXC_SDPA_TIMING_DUMP=1` and read via the extern "C"
+// `mlxc_dump_sdpa_timing()` at end of run.
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+
+namespace mlxc_sdpa_timing {
+  static std::atomic<uint64_t> g_calls{0};
+  static std::atomic<uint64_t> g_input_extract_ns{0};
+  static std::atomic<uint64_t> g_sdpa_call_ns{0};
+  static std::atomic<uint64_t> g_output_wrap_ns{0};
+  static std::atomic<uint64_t> g_total_ns{0};
+}
+
+extern "C" __attribute__((visibility("default"))) void
+mlxc_dump_sdpa_timing(void) {
+  using namespace mlxc_sdpa_timing;
+  uint64_t calls = g_calls.load();
+  if (calls == 0) {
+    std::fprintf(stderr, "[mlxc-sdpa-timing] no SDPA calls observed\n");
+    return;
+  }
+  auto fmt = [calls](const char* name, std::atomic<uint64_t>& bucket) {
+    double total_ms = bucket.load() / 1e6;
+    double per_call_us = bucket.load() / 1000.0 / static_cast<double>(calls);
+    std::fprintf(
+        stderr,
+        "[mlxc-sdpa-timing] %-22s %10.3f ms total   %10.3f us/call\n",
+        name, total_ms, per_call_us);
+  };
+  std::fprintf(
+      stderr, "[mlxc-sdpa-timing] === mlx-c wrapper breakdown (calls=%llu) ===\n",
+      static_cast<unsigned long long>(calls));
+  fmt("input_extract", g_input_extract_ns);
+  fmt("sdpa_call", g_sdpa_call_ns);
+  fmt("output_wrap", g_output_wrap_ns);
+  fmt("TOTAL", g_total_ns);
+}
+
+extern "C" __attribute__((visibility("default"))) void
+mlxc_reset_sdpa_timing(void) {
+  using namespace mlxc_sdpa_timing;
+  g_calls.store(0);
+  g_input_extract_ns.store(0);
+  g_sdpa_call_ns.store(0);
+  g_output_wrap_ns.store(0);
+  g_total_ns.store(0);
+}
+
 struct mlx_fast_cuda_kernel_config_cpp_ {
   std::vector<mlx::core::Shape> output_shapes;
   std::vector<mlx::core::Dtype> output_dtypes;
@@ -611,20 +671,54 @@ extern "C" int mlx_fast_scaled_dot_product_attention(
     const mlx_array mask_arr /* may be null */,
     const mlx_array sinks /* may be null */,
     const mlx_stream s) {
+  using clock_t = std::chrono::steady_clock;
+  auto t_start = clock_t::now();
   try {
-    mlx_array_set_(
-        *res,
-        mlx::core::fast::scaled_dot_product_attention(
-            mlx_array_get_(queries),
-            mlx_array_get_(keys),
-            mlx_array_get_(values),
-            scale,
-            std::string(mask_mode),
-            (mask_arr.ctx ? std::make_optional(mlx_array_get_(mask_arr))
-                          : std::nullopt),
-            (sinks.ctx ? std::make_optional(mlx_array_get_(sinks))
-                       : std::nullopt),
-            mlx_stream_get_(s)));
+    // Stage 1: extract C++ array refs from mlx_array handles.
+    const auto& q_ref = mlx_array_get_(queries);
+    const auto& k_ref = mlx_array_get_(keys);
+    const auto& v_ref = mlx_array_get_(values);
+    auto mask_opt = mask_arr.ctx
+        ? std::make_optional(mlx_array_get_(mask_arr))
+        : std::nullopt;
+    auto sinks_opt =
+        sinks.ctx ? std::make_optional(mlx_array_get_(sinks)) : std::nullopt;
+    std::string mask_mode_str(mask_mode);
+    auto stream_ref = mlx_stream_get_(s);
+    auto t_after_extract = clock_t::now();
+    mlxc_sdpa_timing::g_input_extract_ns.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            t_after_extract - t_start)
+            .count(),
+        std::memory_order_relaxed);
+
+    // Stage 2: the actual SDPA call (matches MLX-side TOTAL bucket).
+    // window_size=0 preserves legacy full-attention behavior; the windowed
+    // variant `mlx_fast_scaled_dot_product_attention_windowed` (see lumen.h)
+    // accepts an explicit window_size.
+    auto sdpa_result = mlx::core::fast::scaled_dot_product_attention(
+        q_ref, k_ref, v_ref, scale, mask_mode_str, mask_opt, sinks_opt,
+        /* window_size = */ 0, stream_ref);
+    auto t_after_sdpa = clock_t::now();
+    mlxc_sdpa_timing::g_sdpa_call_ns.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            t_after_sdpa - t_after_extract)
+            .count(),
+        std::memory_order_relaxed);
+
+    // Stage 3: wrap result into the caller's mlx_array handle.
+    mlx_array_set_(*res, sdpa_result);
+    auto t_end = clock_t::now();
+    mlxc_sdpa_timing::g_output_wrap_ns.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            t_end - t_after_sdpa)
+            .count(),
+        std::memory_order_relaxed);
+    mlxc_sdpa_timing::g_total_ns.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start)
+            .count(),
+        std::memory_order_relaxed);
+    mlxc_sdpa_timing::g_calls.fetch_add(1, std::memory_order_relaxed);
   } catch (std::exception& e) {
     mlx_error(e.what());
     return 1;

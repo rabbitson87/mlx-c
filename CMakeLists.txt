@@ -31,11 +31,27 @@ set(MLX_BUILD_PYTHON_BINDINGS OFF)
 
 if(MLX_C_USE_SYSTEM_MLX)
   find_package(MLX REQUIRED)
+elseif(DEFINED MLX_LOCAL_SOURCE_DIR AND NOT MLX_LOCAL_SOURCE_DIR STREQUAL "")
+  # lumen-rs Layer B Phase 0: use a local MLX checkout so we can iterate on
+  # MLX C++ patches (BufferCache eviction, MetalKernel pipeline cache, etc.)
+  # without modifying upstream mlx-c. Caller (build.rs) sets this when the
+  # MLX_LOCAL_SOURCE_DIR env var is non-empty.
+  message(
+    STATUS
+    "[lumen-rs] using local MLX source at ${MLX_LOCAL_SOURCE_DIR}")
+  FetchContent_Declare(mlx SOURCE_DIR ${MLX_LOCAL_SOURCE_DIR})
+  FetchContent_MakeAvailable(mlx)
 else()
+  # Pinned to the `lumen-rs-patches` branch of rabbitson87/mlx, a fork of
+  # ml-explore/mlx carrying our Kestrel custom primitive declarations
+  # (`mlx/lumen_primitives.{h,cpp}`) plus the Metal-backend telemetry
+  # counters consumed by the lumen-rs perf-gate infrastructure. Override
+  # with `MLX_LOCAL_SOURCE_DIR=<path>` to use a sibling local checkout
+  # during development.
   FetchContent_Declare(
     mlx
-    GIT_REPOSITORY "https://github.com/ml-explore/mlx.git"
-    GIT_TAG v0.30.6)
+    GIT_REPOSITORY "https://github.com/rabbitson87/mlx.git"
+    GIT_TAG b2bbdca823ac572029799cfcdc1400c7e016554d)
   FetchContent_MakeAvailable(mlx)
 endif()
 
@@ -59,6 +75,7 @@ set(mlxc-src
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/map.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/memory.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/metal.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mlx/c/lumen.cpp
     # ${CMAKE_CURRENT_LIST_DIR}/mlx/c/object.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/ops.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/random.cpp

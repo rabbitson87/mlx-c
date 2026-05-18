@@ -411,6 +411,44 @@ int _mlx_array_is_row_contiguous(bool* res, const mlx_array arr);
  */
 int _mlx_array_is_col_contiguous(bool* res, const mlx_array arr);
 
+/**
+ * Phase 1.8 (lumen-rs custom Metal kernel bridge): return the underlying
+ * Metal backing buffer of an array as a raw `MTL::Buffer*` (cast to `void*`).
+ *
+ * The returned pointer is owned by the mlx::core::array — callers MUST NOT
+ * free it. It remains valid for the lifetime of the array (refcount-managed
+ * by mlx-c's array data wrapper).
+ *
+ * Requirements:
+ *   - Array must be evaluated. Call `mlx_array_eval(arr)` or rely on a
+ *     previous op chain that materializes the buffer. If the array is in
+ *     lazy state, returns NULL.
+ *   - Array must be on the Metal backend (Apple Silicon). On other backends
+ *     the returned pointer is undefined.
+ *
+ * For zero-copy interop with custom Metal compute kernels (lumen-rs
+ * Phase 1.8): use this together with `mlx_array_byte_offset()` to obtain
+ * the (buffer, offset) pair needed by `MTLComputeCommandEncoder::setBuffer`.
+ *
+ * Returns NULL on error (array not evaluated / not on Metal / exception).
+ *
+ * Internal function: use at your own risk.
+ */
+const void* _mlx_array_metal_buffer(const mlx_array arr);
+
+/**
+ * Phase 1.8: return the byte offset of element 0 within the array's Metal
+ * backing buffer. Used together with `_mlx_array_metal_buffer()` to pass
+ * arrays to custom Metal kernels.
+ *
+ * Returns 0 if the array uses no offset (the common case for freshly-
+ * allocated arrays). For sliced / viewed arrays, returns the byte offset
+ * of `arr[0, 0, ...]` from the buffer base.
+ *
+ * Internal function: use at your own risk.
+ */
+size_t _mlx_array_byte_offset(const mlx_array arr);
+
 /**@}*/
 
 #ifdef __cplusplus

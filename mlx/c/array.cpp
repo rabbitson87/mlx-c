@@ -659,3 +659,36 @@ extern "C" int _mlx_array_is_col_contiguous(bool* res, const mlx_array arr) {
   }
   return 0;
 }
+
+// Phase 1.8 (lumen-rs custom Metal kernel bridge):
+//
+// Return the underlying Metal backing buffer of an array. On the Metal
+// backend, `array.buffer().ptr()` is a `MTL::Buffer*` cast to `void*`
+// (see `mlx/backend/metal/allocator.cpp` line 23-28). We cast it back to
+// `const void*` for the C ABI.
+//
+// Callers (lumen-rs Phase 1.8) cast this to `MTL::Buffer*` and pass to
+// `MTLComputeCommandEncoder::setBuffer:offset:atIndex:` directly,
+// bypassing mlx-c's lazy-graph + async_eval machinery for custom kernels.
+extern "C" const void* _mlx_array_metal_buffer(const mlx_array arr) {
+  try {
+    const auto& cpp_arr = mlx_array_get_(arr);
+    // Buffer not allocated yet → lazy graph hasn't materialized this array.
+    if (!cpp_arr.is_available()) {
+      return nullptr;
+    }
+    return cpp_arr.buffer().ptr();
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return nullptr;
+  }
+}
+
+extern "C" size_t _mlx_array_byte_offset(const mlx_array arr) {
+  try {
+    return static_cast<size_t>(mlx_array_get_(arr).offset());
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 0;
+  }
+}
