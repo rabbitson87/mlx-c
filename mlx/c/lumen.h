@@ -261,6 +261,33 @@ int mlx_lumen_turboquant_sv_inline(
     mlx_array centroids,
     mlx_stream stream);
 
+/**
+ * Fused TurboQuant attention: O = softmax(Q * K_dq^T * scale) * V_dq
+ * in a single Metal dispatch with inline Lloyd-Max K/V dequant.
+ *
+ *  q         : [B, H,    T=1, D]   bfloat16
+ *  k_codes   : [B, H_kv, N,   D]   uint8
+ *  k_sigma   : [B, H_kv, N]        float32
+ *  v_codes   : [B, H_kv, N,   D]   uint8
+ *  v_sigma   : [B, H_kv, N]        float32
+ *  centroids : [n_levels <= 16]    float32
+ *  scale     : f32 host scalar (attention scale)
+ *  out       : [B, H,    T=1, D]   bfloat16
+ *
+ * Constraints: T=1, D in {256, 512}, n_levels <= 16, H % H_kv == 0.
+ * Returns 0 on success.
+ */
+int mlx_lumen_turboquant_fused_attn(
+    mlx_array* out,
+    mlx_array q,
+    mlx_array k_codes,
+    mlx_array k_sigma,
+    mlx_array v_codes,
+    mlx_array v_sigma,
+    mlx_array centroids,
+    float scale,
+    mlx_stream stream);
+
 #ifdef __cplusplus
 }
 #endif

@@ -278,6 +278,35 @@ extern "C" int mlx_lumen_turboquant_sv_inline(
   return 0;
 }
 
+extern "C" int mlx_lumen_turboquant_fused_attn(
+    mlx_array* out,
+    mlx_array q,
+    mlx_array k_codes,
+    mlx_array k_sigma,
+    mlx_array v_codes,
+    mlx_array v_sigma,
+    mlx_array centroids,
+    float scale,
+    mlx_stream stream) {
+  try {
+    const auto& q_ref         = mlx_array_get_(q);
+    const auto& kc_ref        = mlx_array_get_(k_codes);
+    const auto& ks_ref        = mlx_array_get_(k_sigma);
+    const auto& vc_ref        = mlx_array_get_(v_codes);
+    const auto& vs_ref        = mlx_array_get_(v_sigma);
+    const auto& centroids_ref = mlx_array_get_(centroids);
+    auto stream_ref = mlx_stream_get_(stream);
+    auto result = mlx::core::lumen::turboquant_fused_attn(
+        q_ref, kc_ref, ks_ref, vc_ref, vs_ref, centroids_ref, scale,
+        stream_ref);
+    mlx_array_set_(*out, result);
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
 extern "C" int mlx_lumen_sdpa_windowed(
     mlx_array* result,
     mlx_array q,
