@@ -51,7 +51,11 @@ else()
   FetchContent_Declare(
     mlx
     GIT_REPOSITORY "https://github.com/rabbitson87/mlx.git"
-    GIT_TAG b2bbdca823ac572029799cfcdc1400c7e016554d)
+    # Branch name (not commit hash) — required because CMake FetchContent
+    # uses shallow clone by default and shallow clone cannot resolve a
+    # bare commit hash on GitHub. The lumen-rs-patches branch is pinned
+    # by the lumen-rs maintainer; it is never force-pushed.
+    GIT_TAG lumen-rs-patches)
   FetchContent_MakeAvailable(mlx)
 endif()
 
